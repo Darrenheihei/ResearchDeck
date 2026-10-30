@@ -1,7 +1,9 @@
-import { app, shell, BrowserWindow } from 'electron'
+import { app, nativeImage, shell, BrowserWindow } from 'electron'
 import { join } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
+import macosIcon from '../../resources/icon-macos.png?asset'
+import { registerIpcHandlers } from './ipc'
 
 function createWindow(): void {
   // Create the browser window.
@@ -10,6 +12,18 @@ function createWindow(): void {
     height: 670,
     show: false,
     autoHideMenuBar: true,
+    // Hidden title bar: removes the native title-text bar while keeping the
+    // native window controls (traffic lights on macOS, overlay caption
+    // buttons on Windows). The renderer headers act as drag regions.
+    ...(process.platform === 'darwin'
+      ? { titleBarStyle: 'hiddenInset', trafficLightPosition: { x: 16, y: 13 } }
+      : {}),
+    ...(process.platform === 'win32'
+      ? {
+          titleBarStyle: 'hidden',
+          titleBarOverlay: { color: '#f6f6f8', symbolColor: '#4a4a55', height: 40 }
+        }
+      : {}),
     ...(process.platform === 'linux' ? { icon } : {}),
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
@@ -41,6 +55,17 @@ function createWindow(): void {
 app.whenReady().then(() => {
   // Set app user model id for windows
   electronApp.setAppUserModelId('com.researchdeck.app')
+
+  // Runtime dock icon for dev sessions — corrects the icon immediately even if
+  // the macOS Dock is still serving a stale cached bundle icon. The dev
+  // bundle's own icns is also replaced by scripts/generate-icons.mjs, so the
+  // icon stays correct while quitting (no default-icon flash).
+  if (process.platform === 'darwin') {
+    app.dock?.setIcon(nativeImage.createFromPath(macosIcon))
+  }
+
+  // Vault/settings/dialog IPC handlers
+  registerIpcHandlers()
 
   // Default open or close DevTools by F12 in development
   // and ignore CommandOrControl + R in production.
