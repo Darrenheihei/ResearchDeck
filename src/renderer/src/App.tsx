@@ -1,12 +1,31 @@
-function App(): React.JSX.Element {
-  return (
-    <main className="flex h-screen w-screen flex-col items-center justify-center gap-2 bg-neutral-950 text-neutral-100 antialiased select-none">
-      <h1 className="text-3xl font-bold tracking-tight">ResearchDeck</h1>
-      <p className="text-sm text-neutral-400">
-        Local-first research decks &mdash; bare minimum scaffold
-      </p>
-    </main>
-  )
+import { useState } from 'react'
+import { VaultProvider, useVault } from './state/VaultContext'
+import { SetupScreen } from './components/setup/SetupScreen'
+import { WorkspaceScreen } from './components/workspace/WorkspaceScreen'
+
+function Shell(): React.JSX.Element {
+  const { ready, active } = useVault()
+  const [manageMode, setManageMode] = useState(false)
+
+  if (!ready) {
+    return (
+      <div className="flex h-screen items-center justify-center bg-surface text-sm text-ink-soft">
+        Loading…
+      </div>
+    )
+  }
+
+  if (active && !manageMode) {
+    return <WorkspaceScreen onManage={() => setManageMode(true)} />
+  }
+
+  return <SetupScreen hasActive={active !== null} onWorkspace={() => setManageMode(false)} />
 }
 
-export default App
+export default function App(): React.JSX.Element {
+  return (
+    <VaultProvider>
+      <Shell />
+    </VaultProvider>
+  )
+}

@@ -1,0 +1,36 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+  <!-- Concept A: "Card Stack" — a deck of research cards with a magnifier accent -->
+  <defs>
+    <linearGradient id="a-bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#eef0fe"/>
+      <stop offset="1" stop-color="#dce1fd"/>
+    </linearGradient>
+    <linearGradient id="a-card" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#6366f1"/>
+      <stop offset="1" stop-color="#4338ca"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="1024" height="1024" rx="232" fill="url(#a-bg)"/>
+
+  <!-- inner design, enlarged and centered: scale about the content's true
+       bounding-box center (502, 529), then map it onto the tile center -->
+  <g transform="translate(-140.6 -175.7) scale(1.3)">
+    <!-- back cards of the deck -->
+    <rect x="272" y="244" width="460" height="570" rx="60" fill="#ffffff" opacity="0.5" transform="rotate(-9 502 529)"/>
+    <rect x="280" y="252" width="460" height="570" rx="60" fill="#ffffff" opacity="0.8" transform="rotate(-3 510 537)"/>
+
+    <!-- front card -->
+    <rect x="292" y="264" width="440" height="552" rx="60" fill="url(#a-card)"/>
+
+    <!-- abstract text lines on the card -->
+    <rect x="372" y="392" width="196" height="44" rx="22" fill="#ffffff" opacity="0.95"/>
+    <rect x="372" y="468" width="280" height="30" rx="15" fill="#ffffff" opacity="0.6"/>
+    <rect x="372" y="522" width="232" height="30" rx="15" fill="#ffffff" opacity="0.42"/>
+
+    <!-- magnifier accent -->
+    <circle cx="604" cy="676" r="52" fill="#ffffff"/>
+    <circle cx="604" cy="676" r="30" fill="none" stroke="#4f46e5" stroke-width="16"/>
+    <line x1="642" y1="714" x2="686" y2="758" stroke="#4f46e5" stroke-width="24" stroke-linecap="round"/>
+  </g>
+</svg>
