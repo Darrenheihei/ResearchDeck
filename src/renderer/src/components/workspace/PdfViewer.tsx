@@ -49,24 +49,6 @@ function rescaleTextLayer(wrapper: HTMLDivElement, displayWidth: number): void {
 /** Standalone page-number text, optionally decorated ("12", "- 3 -", "xiv"). */
 const PAGE_NUMBER_RE = /^(?:[-–—·•\s])*(?:\d{1,4}|[ivxlcdm]{1,7})(?:[-–—·•\s])*$/i
 
-interface SearchRect {
-  left: number
-  top: number
-  width: number
-  height: number
-}
-
-interface SearchMatchPart {
-  page: number
-  rects: SearchRect[]
-}
-
-interface SearchMatch {
-  /** One part per touched page, in reading order (a hyphen-split word can
-      span two pages). */
-  parts: SearchMatchPart[]
-}
-
 /**
  * Flattens text for search: case-folded, whitespace runs collapsed to single
  * spaces. Hyphens (hard, soft, non-breaking) are dropped along with any
@@ -102,65 +84,62 @@ function normalizeForSearch(text: string): { norm: string; map: number[] } {
   return { norm, map }
 }
 
-/** Normalized, geometry-tagged text of one page, used to place highlights. */
+/** One raw-character match range on a page. */
+interface SearchPiece {
+  page: number
+  start: number
+  end: number
+}
+
+interface SearchMatch {
+  /** Raw ranges in reading order; a hyphen-split match has two pieces. */
+  pieces: SearchPiece[]
+  /** Live DOM ranges built from the pieces against the text layer. */
+  dom: Range[]
+}
+
+/** Normalized text of one page, used for search matching. */
 interface PageText {
   page: number
-  vp: PageViewport // scale-1 viewport: converts PDF-space to page fractions
+  raw: string
   norm: string
   map: number[]
   rawLen: number
-  items: Array<{ x: number; y: number; w: number; h: number }>
-  spans: Array<{ start: number; end: number }>
 }
 
-/** Extracts and normalizes a page's text with per-item geometry. */
-async function extractPageText(pdfPage: PDFPageProxy, page: number): Promise<PageText> {
+/**
+ * Extracts and normalizes a page's text for search matching. Matching always
+ * uses getTextContent (stable, dedup-free counts). Also reports the built
+ * text layer's span/char stats so the painter only maps offsets onto layers
+ * that are consistent with the extraction.
+ */
+async function extractPageText(
+  scroller: HTMLDivElement | null,
+  pdfPage: PDFPageProxy,
+  page: number
+): Promise<{ text: PageText; aligned: boolean }> {
   const content = await pdfPage.getTextContent()
-  const vp = pdfPage.getViewport({ scale: 1 })
-  const items: Array<{ x: number; y: number; w: number; h: number }> = []
-  const spans: Array<{ start: number; end: number }> = []
   let raw = ''
+  let nonEmpty = 0
   for (const item of content.items) {
     if (!('str' in item)) continue
-    spans.push({ start: raw.length, end: raw.length + item.str.length })
     raw += item.str
-    items.push({
-      x: item.transform[4],
-      y: item.transform[5],
-      w: item.width,
-      h: item.height
-    })
+    if (item.str !== '') nonEmpty++
   }
   const { norm, map } = normalizeForSearch(raw)
-  return { page, vp, norm, map, rawLen: raw.length, items, spans }
-}
+  const text: PageText = { page, raw, norm, map, rawLen: raw.length }
 
-/** Highlight bands (page %) covering a raw-character range of a page. */
-function findRects(text: PageText, rawStart: number, rawEnd: number): SearchRect[] {
-  const rects: SearchRect[] = []
-  for (let i = 0; i < text.items.length; i++) {
-    const span = text.spans[i]
-    if (span.end <= rawStart || span.start >= rawEnd) continue
-    const it = text.items[i]
-    // Char extents within the item are approximated proportionally.
-    const len = Math.max(span.end - span.start, 1)
-    const c0 = Math.max(0, rawStart - span.start)
-    const c1 = Math.min(span.end, rawEnd) - span.start
-    const x0 = it.x + (c0 / len) * it.w
-    const x1 = it.x + (c1 / len) * it.w
-    const [vx0, vy0] = text.vp.convertToViewportPoint(x0, it.y)
-    const [vx1, vy1] = text.vp.convertToViewportPoint(x1, it.y + it.h)
-    const width = (Math.abs(vx1 - vx0) / text.vp.width) * 100
-    const height = (Math.abs(vy1 - vy0) / text.vp.height) * 100
-    if (width <= 0 || height <= 0) continue
-    rects.push({
-      left: (Math.min(vx0, vx1) / text.vp.width) * 100,
-      top: (Math.min(vy0, vy1) / text.vp.height) * 100,
-      width,
-      height
-    })
+  const layer = scroller?.querySelector<HTMLElement>(`[data-page-wrapper="${page}"] .textLayer`)
+  let domSpanCount = 0
+  let domTextLen = 0
+  if (layer) {
+    for (const span of layer.querySelectorAll('span')) {
+      domSpanCount++
+      domTextLen += span.textContent?.length ?? 0
+    }
   }
-  return rects
+  const aligned = domSpanCount === nonEmpty && domTextLen === raw.length
+  return { text, aligned }
 }
 
 /** Locates a selection boundary inside a text-layer span, as a character
@@ -241,6 +220,8 @@ function buildSelectionText(sel: Selection, scroller: HTMLDivElement): string | 
     let added = false
     for (const node of layer.querySelectorAll('span')) {
       if (!(node instanceof HTMLSpanElement) || !sel.containsNode(node, true)) continue
+      // Tagged page-number spans are layout furniture, not content.
+      if (node.dataset.pageNumber === '1') continue
       const top = node.offsetTop
       const bottom = top + node.offsetHeight
       const sameLine =
@@ -413,6 +394,9 @@ function PdfBody({ vaultId, relPath }: { vaultId: string; relPath: string }): Re
   const searchTokenRef = useRef(0) // cancels stale search scans
   const matchesRef = useRef<SearchMatch[]>([])
   const activeMatchRef = useRef(-1)
+  const applySearchRef = useRef<() => void>(() => {})
+  const pageAlignedRef = useRef(new Map<number, boolean>())
+  const healAtRef = useRef(0)
   const [backTarget, setBackTarget] = useState<{ page: number; forward: boolean } | null>(null)
   const [backShown, setBackShown] = useState(false) // inside the 3s window
   const [backHovered, setBackHovered] = useState(false)
@@ -556,15 +540,17 @@ function PdfBody({ vaultId, relPath }: { vaultId: string; relPath: string }): Re
       })
       inFlightText.push(layer)
       await layer.render()
-      // Drop printed page numbers (standalone numerals / roman numerals in
-      // the bottom margin) so cross-page selections copy flowing text only.
+      // Tag printed page numbers instead of removing them: the search
+      // highlights map raw string offsets onto this DOM, so the layer's text
+      // must stay in sync with what extractPageText searched. The copy
+      // handler skips tagged spans.
       const bottomLimit = container.offsetHeight * 0.92
       const heightLimit = container.offsetHeight * 0.05
       container.querySelectorAll('span').forEach((span) => {
         const text = (span.textContent ?? '').trim()
         if (!text || !PAGE_NUMBER_RE.test(text)) return
         if (span.offsetHeight > heightLimit) return
-        if (span.offsetTop + span.offsetHeight >= bottomLimit) span.remove()
+        if (span.offsetTop + span.offsetHeight >= bottomLimit) span.dataset.pageNumber = '1'
       })
       // Paragraph-aware copying: insert an extra break at large vertical gaps
       // (paragraph / column boundaries). The document-level copy handler then
@@ -609,6 +595,7 @@ function PdfBody({ vaultId, relPath }: { vaultId: string; relPath: string }): Re
           prevLineTop = node.offsetTop
         }
       }
+      if (searchOpenRef.current) applySearchRef.current()
     }
 
     const renderAll = (): void => {
@@ -695,6 +682,9 @@ function PdfBody({ vaultId, relPath }: { vaultId: string; relPath: string }): Re
         }
         if (cancelled) return
         scroller.scrollTop = ratio * scroller.scrollHeight
+        // Text layers may have been rebuilt while a search was live — resync
+        // the search so its offsets match the settled DOM.
+        if (searchOpenRef.current) void runSearch(searchQueryRef.current)
       }
       void run()
     }
@@ -776,9 +766,7 @@ function PdfBody({ vaultId, relPath }: { vaultId: string; relPath: string }): Re
     matchesRef.current = []
     activeMatchRef.current = -1
     setMatchInfo({ total: 0, current: 0 })
-    scrollerRef.current
-      ?.querySelectorAll<HTMLDivElement>('.searchLayer')
-      .forEach((layer) => layer.replaceChildren())
+    scrollerRef.current?.querySelectorAll('.search-highlight').forEach((el) => el.remove())
   }, [])
 
   // Close (Esc / ×): hides the bar and clears all highlights.
@@ -874,9 +862,15 @@ function PdfBody({ vaultId, relPath }: { vaultId: string; relPath: string }): Re
     }
   }, [searchOpen])
 
+  const searchQueryRef = useRef(searchQuery)
+
   useEffect(() => {
     pageRef.current = page
   }, [page])
+
+  useEffect(() => {
+    searchQueryRef.current = searchQuery
+  }, [searchQuery])
 
   // Restart the 3-second visibility window of the back button.
   const showBackWindow = useCallback((): void => {
@@ -911,56 +905,154 @@ function PdfBody({ vaultId, relPath }: { vaultId: string; relPath: string }): Re
     []
   )
 
-  const renderSearchHighlights = useCallback((): void => {
+  // Maps the stored raw match ranges onto the built text-layer DOM and
+  // registers them as CSS custom highlights — positioning is pixel-accurate
+  // because the browser paints the ranges over the real text runs.
+  // Maps the stored raw match ranges onto the built text-layer DOM (exact
+  // DOM Ranges), then paints them as absolutely-positioned overlays using
+  // the ranges' client rects — pixel-accurate at the current zoom, and
+  // re-applied whenever zoom/rebuild refreshes the text layers.
+  const applySearchHighlights = useCallback((): void => {
     const scroller = scrollerRef.current
-    if (!scroller) return
-    scroller
-      .querySelectorAll<HTMLDivElement>('.searchLayer')
-      .forEach((layer) => layer.replaceChildren())
-    matchesRef.current.forEach((match, idx) => {
-      for (const part of match.parts) {
-        const layer = scroller.querySelector<HTMLDivElement>(
-          `[data-page-wrapper="${part.page}"] > .searchLayer`
+    scroller?.querySelectorAll('.search-highlight').forEach((el) => el.remove())
+    if (!scroller || !matchesRef.current.length) return
+    let needsRebuild = false
+    const perWrapper = new Map<
+      HTMLDivElement,
+      { left: number; top: number; right: number; bottom: number; active: boolean }[]
+    >()
+    for (let idx = 0; idx < matchesRef.current.length; idx++) {
+      const match = matchesRef.current[idx]
+      match.dom = []
+      for (const piece of match.pieces) {
+        const aligned = pageAlignedRef.current.get(piece.page)
+        const wrapper = scroller.querySelector<HTMLDivElement>(
+          `[data-page-wrapper="${piece.page}"]`
         )
-        if (!layer) continue
-        for (const rect of part.rects) {
-          const div = document.createElement('div')
-          div.className = `search-highlight${idx === activeMatchRef.current ? ' active' : ''}`
-          div.dataset.idx = String(idx)
-          div.style.left = `${rect.left}%`
-          div.style.top = `${rect.top}%`
-          div.style.width = `${rect.width}%`
-          div.style.height = `${rect.height}%`
-          layer.append(div)
+        const layer = wrapper?.querySelector<HTMLElement>('.textLayer')
+        // Paint only layers verified consistent with the extraction (span
+        // count + char length). Inconsistent layers carry duplicated or
+        // partial text — skipping avoids false highlights; the rebuild
+        // below heals them.
+        if (aligned === false || !wrapper || !layer) {
+          if (aligned === false) needsRebuild = true
+          continue
+        }
+        const wrapRect = wrapper.getBoundingClientRect()
+        let acc = 0
+        for (const span of layer.querySelectorAll('span')) {
+          const node = span.firstChild
+          if (!(node instanceof Text)) continue
+          const len = span.textContent?.length ?? 0
+          const segStart = acc
+          acc += len
+          if (segStart + len <= piece.start || segStart >= piece.end) continue
+          const range = new Range()
+          range.setStart(node, Math.max(0, piece.start - segStart))
+          range.setEnd(node, Math.min(piece.end - segStart, len))
+          match.dom.push(range)
+          const active = idx === activeMatchRef.current
+          for (const rect of range.getClientRects()) {
+            if (rect.width <= 0 || rect.height <= 0) continue
+            const arr = perWrapper.get(wrapper) ?? []
+            arr.push({
+              left: rect.left - wrapRect.left,
+              top: rect.top - wrapRect.top,
+              right: rect.right - wrapRect.left,
+              bottom: rect.bottom - wrapRect.top,
+              active
+            })
+            perWrapper.set(wrapper, arr)
+          }
         }
       }
-    })
+    }
+    // Merge touching/overlapping boxes into single unified boxes — the
+    // overlays are semi-transparent, so stacked boxes would read as a darker
+    // "double-highlighted" region. Matches on one line merge into one strip;
+    // superscript/raised fragments fuse with their base line.
+    for (const [wrapper, boxes] of perWrapper) {
+      boxes.sort((a, b) => a.top - b.top || a.left - b.left)
+      const merged: typeof boxes = []
+      for (const box of boxes) {
+        const last = merged[merged.length - 1]
+        if (
+          last &&
+          box.left <= last.right + 1 &&
+          box.right + 1 >= last.left &&
+          box.top <= last.bottom + 1 &&
+          box.bottom + 1 >= last.top
+        ) {
+          last.left = Math.min(last.left, box.left)
+          last.top = Math.min(last.top, box.top)
+          last.right = Math.max(last.right, box.right)
+          last.bottom = Math.max(last.bottom, box.bottom)
+          last.active = last.active || box.active
+        } else {
+          merged.push({ ...box })
+        }
+      }
+      for (const box of merged) {
+        const div = document.createElement('div')
+        div.className = `search-highlight${box.active ? ' search-highlight-active' : ''}`
+        div.style.left = `${box.left}px`
+        div.style.top = `${box.top}px`
+        div.style.width = `${box.right - box.left}px`
+        div.style.height = `${box.bottom - box.top}px`
+        wrapper.append(div)
+      }
+    }
+    // Auto-heal: a layer inconsistent with the extraction carries duplicated
+    // or partial text — rebuild and resync (debounced).
+    if (needsRebuild) {
+      const now = Date.now()
+      if (now - healAtRef.current > 2000) {
+        healAtRef.current = now
+        pagesRenderRef.current?.()
+      }
+    }
   }, [])
+  applySearchRef.current = applySearchHighlights
 
   // Scrolls to a match and marks it active. Index wraps in both directions.
-  const goToMatch = useCallback((idx: number): void => {
-    const total = matchesRef.current.length
-    if (!total) return
-    const next = ((idx % total) + total) % total
-    activeMatchRef.current = next
-    setMatchInfo({ total, current: next + 1 })
-    const match = matchesRef.current[next]
-    const scroller = scrollerRef.current
-    const wrapper = scroller?.querySelector<HTMLDivElement>(
-      `[data-page-wrapper="${match.parts[0].page}"]`
-    )
-    if (!scroller || !wrapper) return
-    scroller.querySelectorAll<HTMLElement>('.search-highlight').forEach((el) => {
-      el.classList.toggle('active', el.dataset.idx === String(next))
-    })
-    const top =
-      wrapper.getBoundingClientRect().top -
-      scroller.getBoundingClientRect().top +
-      scroller.scrollTop +
-      (match.parts[0].rects[0].top / 100) * wrapper.offsetHeight -
-      scroller.clientHeight / 3
-    scroller.scrollTop = Math.max(0, top)
-  }, [])
+  const goToMatch = useCallback(
+    (idx: number): void => {
+      const total = matchesRef.current.length
+      if (!total) return
+      const next = ((idx % total) + total) % total
+      activeMatchRef.current = next
+      setMatchInfo({ total, current: next + 1 })
+      applySearchHighlights()
+      const match = matchesRef.current[next]
+      const scroller = scrollerRef.current
+      if (!scroller) return
+      const rect = match.dom[0]?.getBoundingClientRect()
+      if (!rect) {
+        // Layer not built yet — fall back to the page top.
+        const wrapper = scroller.querySelector<HTMLDivElement>(
+          `[data-page-wrapper="${match.pieces[0].page}"]`
+        )
+        if (wrapper) {
+          scroller.scrollTop = Math.max(
+            0,
+            wrapper.getBoundingClientRect().top -
+              scroller.getBoundingClientRect().top +
+              scroller.scrollTop -
+              12
+          )
+        }
+        return
+      }
+      scroller.scrollTop = Math.max(
+        0,
+        rect.top -
+          scroller.getBoundingClientRect().top +
+          scroller.scrollTop -
+          scroller.clientHeight / 3
+      )
+    },
+    [applySearchHighlights]
+  )
 
   // Scans every page's text for the query (including hyphen-split words that
   // straddle a page boundary) and stores highlight rects in page percentages.
@@ -970,9 +1062,10 @@ function PdfBody({ vaultId, relPath }: { vaultId: string; relPath: string }): Re
       const token = ++searchTokenRef.current
       matchesRef.current = []
       activeMatchRef.current = -1
+      pageAlignedRef.current.clear()
       const needle = normalizeForSearch(rawQuery).norm
       if (!doc || !needle) {
-        renderSearchHighlights()
+        applySearchHighlights()
         setMatchInfo({ total: 0, current: 0 })
         return
       }
@@ -984,7 +1077,9 @@ function PdfBody({ vaultId, relPath }: { vaultId: string; relPath: string }): Re
         try {
           const pdfPage = await doc.getPage(p)
           if (token !== searchTokenRef.current) return
-          text = await extractPageText(pdfPage, p)
+          const extracted = await extractPageText(scrollerRef.current, pdfPage, p)
+          text = extracted.text
+          pageAlignedRef.current.set(p, extracted.aligned)
           if (token !== searchTokenRef.current) return
         } catch {
           prev = null // page unreadable — skip it (and any boundary chain)
@@ -996,37 +1091,43 @@ function PdfBody({ vaultId, relPath }: { vaultId: string; relPath: string }): Re
           const at = text.norm.indexOf(needle, from)
           if (at === -1) break
           from = at + 1
-          const rects = findRects(text, text.map[at], text.map[at + needle.length - 1] + 1)
-          if (rects.length) results.push({ parts: [{ page: p, rects }] })
+          results.push({
+            pieces: [{ page: p, start: text.map[at], end: text.map[at + needle.length - 1] + 1 }],
+            dom: []
+          })
         }
         // Hyphen-split word crossing the previous page boundary: the needle's
         // head ends the previous page, its tail starts this one.
-        if (prev) {
+        if (prev && prev.raw.trimEnd().endsWith('-')) {
+          // Only the last split point counts, and only when the previous page
+          // visually ends with a hyphen and resumes with a lowercase letter
+          // — otherwise coincidental head/tail pairs would be flagged.
+          if (!/^[a-z\u00e0-\u00f6\u00f8-\u00ff]/.test(text.raw)) {
+            prev = text
+            continue
+          }
           for (let s = 1; s < needle.length; s++) {
             if (!prev.norm.endsWith(needle.slice(0, s))) continue
             if (!text.norm.startsWith(needle.slice(s))) continue
-            const headRects = findRects(prev, prev.map[prev.norm.length - s], prev.rawLen)
-            const tailRects = findRects(text, text.map[0], text.map[needle.length - s - 1] + 1)
-            if (headRects.length && tailRects.length) {
-              results.push({
-                parts: [
-                  { page: prev.page, rects: headRects },
-                  { page: p, rects: tailRects }
-                ]
-              })
-              break // at most one cross-page match per boundary
-            }
+            results.push({
+              pieces: [
+                { page: prev.page, start: prev.map[prev.norm.length - s], end: prev.rawLen },
+                { page: p, start: text.map[0], end: text.map[needle.length - s - 1] + 1 }
+              ],
+              dom: []
+            })
+            break // at most one cross-page match per boundary
           }
         }
         prev = text
       }
       if (token !== searchTokenRef.current) return
       matchesRef.current = results
-      renderSearchHighlights()
+      applySearchHighlights()
       if (results.length) goToMatch(0)
       else setMatchInfo({ total: 0, current: 0 })
     },
-    [doc, goToMatch, renderSearchHighlights]
+    [doc, goToMatch, applySearchHighlights]
   )
 
   // Live search: re-run (debounced) as the query changes.
@@ -1192,7 +1293,6 @@ function PdfBody({ vaultId, relPath }: { vaultId: string; relPath: string }): Re
                 <canvas data-page={i + 1} className="block w-full" />
                 <div className="annotationLayer" />
                 <div data-text-layer={i + 1} className="textLayer" />
-                <div className="searchLayer" />
               </div>
             ))}
           </div>

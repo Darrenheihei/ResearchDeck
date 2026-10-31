@@ -137,23 +137,17 @@ body {
   border-radius: 2px;
 }
 
-/* PDF search matches: non-interactive highlight overlay. Rects are stored in
-   page percentages, so highlights track zoom and pane resizes for free. */
-.searchLayer {
+/* PDF search matches: overlays painted from DOM-range client rects — exact
+   glyph boxes at the current zoom; re-applied after zoom/rebuild. */
+.search-highlight {
   position: absolute;
-  inset: 0;
   z-index: 3;
-  overflow: clip;
   pointer-events: none;
-}
-
-.searchLayer .search-highlight {
-  position: absolute;
   border-radius: 1px;
   background: rgba(250, 204, 21, 0.4);
 }
 
-.searchLayer .search-highlight.active {
+.search-highlight.search-highlight-active {
   background: rgba(249, 115, 22, 0.45);
 }
 
