@@ -29,7 +29,7 @@ export function Modal({
       onMouseDown={onClose}
     >
       <div
-        className={`w-full ${width} rounded-xl border border-line bg-surface p-5 shadow-2xl`}
+        className={`selectable w-full ${width} rounded-xl border border-line bg-surface p-5 shadow-2xl`}
         onMouseDown={(e) => e.stopPropagation()}
       >
         <div className="mb-4 flex items-center justify-between">

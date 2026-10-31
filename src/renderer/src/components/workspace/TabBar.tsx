@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { SessionTab } from '@shared/types'
-import { baseName } from '../../lib/ui'
-import { XIcon } from '../icons'
+import { baseName, isPdfFile } from '../../lib/ui'
+import { PdfIcon, XIcon } from '../icons'
 
 interface TabBarProps {
   tabs: SessionTab[]
@@ -191,6 +191,7 @@ export function TabBar({
                   : ''
             }`}
           >
+            {isPdfFile(tab.relPath) && <PdfIcon className="h-3.5 w-3.5 shrink-0 text-danger" />}
             <span className={`truncate ${tab.pinned ? '' : 'italic'}`}>
               {baseName(tab.relPath)}
             </span>

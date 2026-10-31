@@ -46,6 +46,23 @@ export function ChevronDownIcon(props: IconProps): React.JSX.Element {
   )
 }
 
+export function ChevronUpIcon(props: IconProps): React.JSX.Element {
+  return (
+    <Svg {...props}>
+      <path d="m18 15-6-6-6 6" />
+    </Svg>
+  )
+}
+
+export function SearchIcon(props: IconProps): React.JSX.Element {
+  return (
+    <Svg {...props}>
+      <circle cx="11" cy="11" r="8" />
+      <path d="m21 21-4.3-4.3" />
+    </Svg>
+  )
+}
+
 export function FolderIcon(props: IconProps): React.JSX.Element {
   return (
     <Svg {...props}>
@@ -59,6 +76,47 @@ export function FileIcon(props: IconProps): React.JSX.Element {
     <Svg {...props}>
       <path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z" />
       <path d="M14 2v4a2 2 0 0 0 2 2h4" />
+    </Svg>
+  )
+}
+
+export function PdfIcon({ className = 'h-4 w-4' }: IconProps): React.JSX.Element {
+  return (
+    <svg viewBox="0 0 24 24" className={className} aria-hidden="true">
+      <path
+        d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinejoin="round"
+      />
+      <path
+        d="M14 2v4a2 2 0 0 0 2 2h4"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <text
+        x="12"
+        y="16.5"
+        textAnchor="middle"
+        fontSize="6.5"
+        fontWeight="700"
+        fill="currentColor"
+        fontFamily="Arial, Helvetica, sans-serif"
+      >
+        PDF
+      </text>
+    </svg>
+  )
+}
+
+export function MinusIcon(props: IconProps): React.JSX.Element {
+  return (
+    <Svg {...props}>
+      <path d="M5 12h14" />
     </Svg>
   )
 }

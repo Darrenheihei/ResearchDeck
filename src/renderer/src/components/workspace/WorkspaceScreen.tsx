@@ -1,9 +1,10 @@
 import { useRef, useState } from 'react'
 import type { VaultNode } from '@shared/types'
 import { useVault } from '../../state/VaultContext'
-import { baseName, btnIcon, humanSize } from '../../lib/ui'
+import { baseName, btnIcon, humanSize, isPdfFile } from '../../lib/ui'
 import { TabBar } from './TabBar'
 import { FileTree } from './FileTree'
+import { PdfViewer } from './PdfViewer'
 import { VaultSwitcher } from './VaultSwitcher'
 import { ChevronLeftIcon, FileIcon, FolderIcon, MoonIcon, RefreshIcon, SunIcon } from '../icons'
 
@@ -239,8 +240,16 @@ export function WorkspaceScreen({ onManage }: WorkspaceScreenProps): React.JSX.E
         </aside>
 
         <div className="flex min-w-0 flex-1 flex-col">
-          <main className="min-h-0 flex-1 overflow-auto p-8">
-            {activeTab ? (
+          <main
+            className={
+              activeTab && isPdfFile(activeTab.relPath)
+                ? 'selectable min-h-0 flex-1'
+                : 'selectable min-h-0 flex-1 overflow-auto p-8'
+            }
+          >
+            {activeTab && isPdfFile(activeTab.relPath) ? (
+              <PdfViewer vaultId={active.vault.id} relPath={activeTab.relPath} />
+            ) : activeTab ? (
               <div className="mx-auto max-w-xl rounded-xl border border-line bg-surface-raised p-6">
                 <div className="flex items-center gap-3">
                   <FileIcon className="h-6 w-6 text-accent" />

@@ -32,6 +32,11 @@ export function baseName(relPath: string): string {
   return idx === -1 ? relPath : relPath.slice(idx + 1)
 }
 
+/** True if the vault-relative path points at a PDF file. */
+export function isPdfFile(relPath: string): boolean {
+  return relPath.toLowerCase().endsWith('.pdf')
+}
+
 /** Formats an absolute path with a shortened middle for narrow UI. */
 export function shortenPath(path: string, max = 64): string {
   if (path.length <= max) return path

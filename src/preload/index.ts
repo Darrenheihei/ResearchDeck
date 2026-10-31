@@ -22,7 +22,8 @@ const api: ResearchDeckApi = {
     relink: (payload) => ipcRenderer.invoke('vault:relink', payload),
     revealInFileManager: (payload) => ipcRenderer.invoke('vault:revealInFileManager', payload),
     saveSession: (payload) => ipcRenderer.invoke('vault:saveSession', payload),
-    readTree: (payload) => ipcRenderer.invoke('vault:readTree', payload)
+    readTree: (payload) => ipcRenderer.invoke('vault:readTree', payload),
+    readFile: (payload) => ipcRenderer.invoke('vault:readFile', payload)
   }
 }
 
