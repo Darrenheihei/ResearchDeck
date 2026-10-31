@@ -37,6 +37,11 @@ export function isPdfFile(relPath: string): boolean {
   return relPath.toLowerCase().endsWith('.pdf')
 }
 
+/** True if the path points at a Markdown file. */
+export function isMarkdownFile(relPath: string): boolean {
+  return relPath.toLowerCase().endsWith('.md')
+}
+
 /** Formats an absolute path with a shortened middle for narrow UI. */
 export function shortenPath(path: string, max = 64): string {
   if (path.length <= max) return path

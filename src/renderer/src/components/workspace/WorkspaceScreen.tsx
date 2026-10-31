@@ -140,19 +140,19 @@ export function WorkspaceScreen({ onManage }: WorkspaceScreenProps): React.JSX.E
             <div className="flex items-center justify-end gap-0.5 px-3 pb-1">
               <button
                 type="button"
-                className={btnIcon}
+                className="flex h-6 w-6 cursor-pointer items-center justify-center rounded-md text-ink-soft transition-colors hover:bg-surface-raised hover:text-ink"
                 onClick={() => void refreshTree()}
                 title="Refresh file tree"
               >
-                <RefreshIcon />
+                <RefreshIcon className="h-3.5 w-3.5" />
               </button>
               <button
                 type="button"
-                className={btnIcon}
+                className="flex h-8 w-8 cursor-pointer items-center justify-center rounded-md text-ink-soft transition-colors hover:bg-surface-raised hover:text-ink"
                 onClick={collapseSidebar}
                 title="Hide file tree"
               >
-                <ChevronLeftIcon />
+                <ChevronLeftIcon className="h-4 w-4" />
               </button>
             </div>
             {active.tree.truncated && (
@@ -191,40 +191,41 @@ export function WorkspaceScreen({ onManage }: WorkspaceScreenProps): React.JSX.E
             </div>
           </div>
           {/* Collapsed rail — just the expand control; the settings part
-              collapses away together with the tree. */}
-          <div
-            className={`drag-region absolute left-0 top-0 flex h-full w-11 flex-col items-center pt-2 transition-opacity duration-200 ${
-              sidebarCollapsed ? 'opacity-100' : 'pointer-events-none opacity-0'
-            }`}
-          >
-            <button
-              type="button"
-              title="Show file tree"
-              onClick={expandSidebar}
-              className="no-drag flex h-9 w-9 items-center justify-center rounded-lg text-ink-soft transition-colors hover:bg-accent-soft hover:text-accent"
-            >
-              <FolderIcon className="h-5 w-5" />
-            </button>
-            <div className="mt-auto flex w-full flex-col items-center gap-1 pb-2">
-              <VaultSwitcher
-                variant="icon"
-                direction="right"
-                vaults={vaults}
-                activeVaultId={active.vault.id}
-                activeName={active.vault.name}
-                onOpenVault={(id) => void openVault(id)}
-                onManage={onManage}
-              />
+              collapses away together with the tree. Rendered ONLY while
+              collapsed: its drag-region swallows mouse input along the left
+              edge even when invisible, which would kill clicks/hovers on the
+              tree rows' chevron and icons. */}
+          {sidebarCollapsed && (
+            <div className="drag-region absolute left-0 top-0 flex h-full w-11 flex-col items-center pt-2">
               <button
                 type="button"
-                className="flex h-9 w-9 items-center justify-center rounded-lg text-ink-soft transition-colors hover:bg-accent-soft hover:text-accent"
-                onClick={toggleTheme}
-                title={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
+                title="Show file tree"
+                onClick={expandSidebar}
+                className="no-drag flex h-9 w-9 items-center justify-center rounded-lg text-ink-soft transition-colors hover:bg-accent-soft hover:text-accent"
               >
-                {theme === 'dark' ? <SunIcon /> : <MoonIcon />}
+                <FolderIcon className="h-5 w-5" />
               </button>
+              <div className="mt-auto flex w-full flex-col items-center gap-1 pb-2">
+                <VaultSwitcher
+                  variant="icon"
+                  direction="right"
+                  vaults={vaults}
+                  activeVaultId={active.vault.id}
+                  activeName={active.vault.name}
+                  onOpenVault={(id) => void openVault(id)}
+                  onManage={onManage}
+                />
+                <button
+                  type="button"
+                  className="flex h-9 w-9 items-center justify-center rounded-lg text-ink-soft transition-colors hover:bg-accent-soft hover:text-accent"
+                  onClick={toggleTheme}
+                  title={theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
+                >
+                  {theme === 'dark' ? <SunIcon /> : <MoonIcon />}
+                </button>
+              </div>
             </div>
-          </div>
+          )}
           {/* Invisible resize boundary — overlays the sidebar's right edge so the
               tab bar sits flush against the sidebar (no spacer gap). */}
           {!sidebarCollapsed && (
