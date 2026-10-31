@@ -34,7 +34,7 @@ export function SetupScreen({ hasActive, onWorkspace }: SetupScreenProps): React
 
   return (
     <div className="min-h-screen bg-surface text-ink">
-      <div className="mx-auto flex min-h-screen max-w-2xl flex-col px-6 py-10">
+      <div className="selectable mx-auto flex min-h-screen max-w-2xl flex-col px-6 py-10">
         <div
           className={`drag-region flex h-12 items-center justify-between pr-1 ${isMac ? 'pl-24' : ''}`}
         >

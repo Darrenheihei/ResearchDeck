@@ -1,9 +1,62 @@
-import { app, nativeImage, shell, BrowserWindow } from 'electron'
+import { app, nativeImage, shell, BrowserWindow, Menu } from 'electron'
 import { join } from 'path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import icon from '../../resources/icon.png?asset'
 import macosIcon from '../../resources/icon-macos.png?asset'
 import { registerIpcHandlers } from './ipc'
+import { registerVaultSchemePrivileges, registerVaultProtocolHandler } from './vaultProtocol'
+
+// Custom vault-file protocol — must be registered before the app is ready.
+registerVaultSchemePrivileges()
+
+/**
+ * Application menu without global zoom accelerators: ⌘/Ctrl +/−/0 stay free for
+ * the PDF viewer's document-scoped zoom. Edit roles keep ⌘C/⌘V etc. working.
+ */
+function createAppMenu(): void {
+  const template: Electron.MenuItemConstructorOptions[] = [
+    {
+      label: 'Edit',
+      submenu: [
+        { role: 'undo' },
+        { role: 'redo' },
+        { type: 'separator' },
+        { role: 'cut' },
+        { role: 'copy' },
+        { role: 'paste' },
+        { role: 'selectAll' }
+      ]
+    },
+    {
+      label: 'View',
+      submenu: [
+        { role: 'reload' },
+        { role: 'toggleDevTools' },
+        { type: 'separator' },
+        { role: 'togglefullscreen' }
+      ]
+    },
+    {
+      label: 'Window',
+      submenu: [{ role: 'minimize' }, { role: 'zoom' }, { role: 'close' }]
+    }
+  ]
+  if (process.platform === 'darwin') {
+    template.unshift({
+      label: app.name,
+      submenu: [
+        { role: 'about' },
+        { type: 'separator' },
+        { role: 'hide' },
+        { role: 'hideOthers' },
+        { role: 'unhide' },
+        { type: 'separator' },
+        { role: 'quit' }
+      ]
+    })
+  }
+  Menu.setApplicationMenu(Menu.buildFromTemplate(template))
+}
 
 function createWindow(): void {
   // Create the browser window.
@@ -35,6 +88,23 @@ function createWindow(): void {
     mainWindow.show()
   })
 
+  // Native context menu for selected or editable text (chrome stays menu-free).
+  mainWindow.webContents.on('context-menu', (_, params) => {
+    if (!params.isEditable && !params.selectionText.trim()) return
+    const items: Electron.MenuItemConstructorOptions[] = [
+      { role: 'copy', label: 'Copy' },
+      ...(params.isEditable
+        ? ([
+            { role: 'cut', label: 'Cut' },
+            { role: 'paste', label: 'Paste' }
+          ] as const)
+        : []),
+      { type: 'separator' },
+      { role: 'selectAll', label: 'Select All' }
+    ]
+    Menu.buildFromTemplate(items).popup({ window: mainWindow })
+  })
+
   mainWindow.webContents.setWindowOpenHandler((details) => {
     shell.openExternal(details.url)
     return { action: 'deny' }
@@ -63,6 +133,11 @@ app.whenReady().then(() => {
   if (process.platform === 'darwin') {
     app.dock?.setIcon(nativeImage.createFromPath(macosIcon))
   }
+
+  // Vault-file streaming protocol for the renderer (PDF viewer etc.)
+  registerVaultProtocolHandler()
+
+  createAppMenu()
 
   // Vault/settings/dialog IPC handlers
   registerIpcHandlers()

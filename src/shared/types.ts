@@ -95,5 +95,6 @@ export interface ResearchDeckApi {
     revealInFileManager(payload: { id: string }): Promise<Result<null>>
     saveSession(payload: { id: string; session: VaultSession }): Promise<Result<null>>
     readTree(payload: { id: string }): Promise<Result<VaultTree>>
+    readFile(payload: { id: string; relPath: string }): Promise<Result<Uint8Array>>
   }
 }

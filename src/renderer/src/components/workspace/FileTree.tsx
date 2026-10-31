@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { VaultNode, VaultTree } from '@shared/types'
-import { ChevronDownIcon, ChevronRightIcon, FileIcon, FolderIcon } from '../icons'
+import { isPdfFile } from '../../lib/ui'
+import { ChevronDownIcon, ChevronRightIcon, FileIcon, FolderIcon, PdfIcon } from '../icons'
 
 interface FileTreeProps {
   tree: VaultTree
@@ -35,6 +36,7 @@ function NodeRow({
   const isDir = node.kind === 'directory'
   const isOpen = isDir && expanded.has(node.path)
   const isActive = !isDir && node.path === activeRelPath
+  const isPdf = !isDir && isPdfFile(node.path)
   const indent = { paddingLeft: `${8 + depth * 14}px` }
 
   if (isDir) {
@@ -91,7 +93,11 @@ function NodeRow({
       }`}
     >
       <span className="inline-block h-3.5 w-3.5 shrink-0" />
-      <FileIcon className="h-4 w-4 shrink-0 text-ink-soft" />
+      {isPdf ? (
+        <PdfIcon className="h-4 w-4 shrink-0 text-danger" />
+      ) : (
+        <FileIcon className="h-4 w-4 shrink-0 text-ink-soft" />
+      )}
       <span className="truncate">{node.name}</span>
     </button>
   )

@@ -70,6 +70,120 @@ body {
   -webkit-app-region: no-drag;
 }
 
+/* Message/content text: highlightable and copyable (chrome stays unselectable). */
+.selectable {
+  user-select: text;
+  cursor: text;
+}
+
+/* pdf.js text layer: transparent text spans over the page canvas so document
+   text is selectable/copyable with aligned highlights. Block below is the
+   official text layer stylesheet from pdfjs-dist (pdf_viewer.css), which
+   positions the spans via the --*-scale-factor custom properties set in JS. */
+.textLayer {
+  color-scheme: only light;
+
+  position: absolute;
+  text-align: initial;
+  inset: 0;
+  overflow: clip;
+  opacity: 1;
+  line-height: 1;
+  letter-spacing: normal;
+  word-spacing: normal;
+  -webkit-text-size-adjust: none;
+  text-size-adjust: none;
+  forced-color-adjust: none;
+  transform-origin: 0 0;
+  caret-color: CanvasText;
+  z-index: 0;
+
+  &.highlighting {
+    touch-action: none;
+  }
+
+  :is(span, br) {
+    color: transparent;
+    position: absolute;
+    white-space: pre;
+    cursor: text;
+    transform-origin: 0% 0%;
+    -webkit-user-select: text;
+    user-select: text;
+  }
+  --min-font-size: 1;
+  --text-scale-factor: calc(var(--total-scale-factor) * var(--min-font-size));
+  --min-font-size-inv: calc(1 / var(--min-font-size));
+}
+
+/* pdf.js link annotations: clickable citation/figure/URL overlays. */
+.annotationLayer {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  /* Pass mouse events through to the text layer below; only the link
+     boxes themselves are interactive. */
+  pointer-events: none;
+}
+
+.annotationLayer .link-annotation {
+  position: absolute;
+  cursor: pointer;
+  pointer-events: auto;
+}
+
+.annotationLayer .link-annotation:hover {
+  background: rgba(79, 70, 229, 0.15);
+  border-radius: 2px;
+}
+
+.textLayer {
+  > :not(.markedContent),
+  .markedContent span:not(.markedContent) {
+    z-index: 1;
+
+    --font-height: 0;
+    font-size: calc(var(--text-scale-factor) * var(--font-height));
+
+    --scale-x: 1;
+    --rotate: 0deg;
+    transform: rotate(var(--rotate)) scaleX(var(--scale-x)) scale(var(--min-font-size-inv));
+  }
+
+  .markedContent {
+    display: contents;
+  }
+
+  span[role='img'] {
+    -webkit-user-select: none;
+    user-select: none;
+    cursor: default;
+  }
+
+  ::selection {
+    background: rgba(79, 70, 229, 0.3);
+    color: transparent;
+  }
+
+  br::selection {
+    background: transparent;
+  }
+
+  .endOfContent {
+    display: block;
+    position: absolute;
+    inset: 100% 0 0;
+    z-index: 0;
+    cursor: default;
+    -webkit-user-select: none;
+    user-select: none;
+  }
+
+  &.selecting .endOfContent {
+    top: 0;
+  }
+}
+
 /* Thin custom scrollbar for the tab strip (theme-aware). */
 .tab-strip {
   scrollbar-width: thin;

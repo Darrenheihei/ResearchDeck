@@ -1,6 +1,9 @@
+import { promises as fsp } from 'node:fs'
+import { resolve, sep } from 'node:path'
 import { dialog, ipcMain } from 'electron'
 import type { AppSettings, Result, VaultErrorCode } from '@shared/types'
 import { isTheme, readSettings, writeSettings } from './storage/appSettings'
+import { isValidRelPath } from './storage/sessionStore'
 import {
   VaultOpError,
   createNewVault,
@@ -53,6 +56,26 @@ function asString(record: Record<string, unknown>, key: string): string {
 
 export function registerIpcHandlers(): void {
   ipcMain.handle('app:getSettings', () => wrap(readSettings))
+
+  // Raw bytes of a file inside a registered vault (PDF viewer etc.). Typed
+  // arrays cross IPC via structured clone — no fetch/CORS/protocol involved.
+  ipcMain.handle('vault:readFile', (_event, payload) =>
+    wrap(async () => {
+      const record = asRecord(payload)
+      const id = asString(record, 'id')
+      const relPath = asString(record, 'relPath')
+      if (!isValidRelPath(relPath))
+        throw new VaultOpError('INVALID_INPUT', 'Invalid vault file path.')
+      const registry = await readRegistry()
+      const vault = registry.vaults.find((v) => v.id === id)
+      if (!vault) throw new VaultOpError('NOT_REGISTERED', 'Vault not found.')
+      const root = resolve(vault.path)
+      const absPath = resolve(root, relPath)
+      if (!absPath.startsWith(root + sep))
+        throw new VaultOpError('INVALID_INPUT', 'Path escapes the vault root.')
+      return new Uint8Array(await fsp.readFile(absPath))
+    })
+  )
 
   ipcMain.handle('app:setTheme', (_event, payload) =>
     wrap(async () => {
