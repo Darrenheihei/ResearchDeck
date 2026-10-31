@@ -46,6 +46,23 @@ export function ChevronDownIcon(props: IconProps): React.JSX.Element {
   )
 }
 
+export function ChevronUpIcon(props: IconProps): React.JSX.Element {
+  return (
+    <Svg {...props}>
+      <path d="m18 15-6-6-6 6" />
+    </Svg>
+  )
+}
+
+export function SearchIcon(props: IconProps): React.JSX.Element {
+  return (
+    <Svg {...props}>
+      <circle cx="11" cy="11" r="8" />
+      <path d="m21 21-4.3-4.3" />
+    </Svg>
+  )
+}
+
 export function FolderIcon(props: IconProps): React.JSX.Element {
   return (
     <Svg {...props}>

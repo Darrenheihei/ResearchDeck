@@ -1,9 +1,11 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import type { PageViewport, PDFDocumentProxy, PDFPageProxy, RenderTask } from 'pdfjs-dist'
 import * as pdfjsLib from 'pdfjs-dist'
 import workerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
+// Vendored from sindresorhus/word-list (MIT; atebits/Words en.txt, ~275k entries).
+import wordsUrl from '../../assets/words-en.txt?url'
 import { btnIcon } from '../../lib/ui'
-import { MinusIcon, PlusIcon } from '../icons'
+import { ChevronDownIcon, ChevronUpIcon, MinusIcon, PlusIcon, SearchIcon, XIcon } from '../icons'
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = workerUrl
 
@@ -47,6 +49,316 @@ function rescaleTextLayer(wrapper: HTMLDivElement, displayWidth: number): void {
 /** Standalone page-number text, optionally decorated ("12", "- 3 -", "xiv"). */
 const PAGE_NUMBER_RE = /^(?:[-–—·•\s])*(?:\d{1,4}|[ivxlcdm]{1,7})(?:[-–—·•\s])*$/i
 
+interface SearchRect {
+  left: number
+  top: number
+  width: number
+  height: number
+}
+
+interface SearchMatchPart {
+  page: number
+  rects: SearchRect[]
+}
+
+interface SearchMatch {
+  /** One part per touched page, in reading order (a hyphen-split word can
+      span two pages). */
+  parts: SearchMatchPart[]
+}
+
+/**
+ * Flattens text for search: case-folded, whitespace runs collapsed to single
+ * spaces. Hyphens (hard, soft, non-breaking) are dropped along with any
+ * whitespace right after them, so words hyphen-split across lines or pages
+ * ("ro-bustly") match their unbroken form. The query is normalized the same
+ * way, so typed hyphens ("well-known") still match. `map` maps each
+ * normalized index back to its source index in `text`.
+ */
+function normalizeForSearch(text: string): { norm: string; map: number[] } {
+  let norm = ''
+  const map: number[] = []
+  let lastWasSpace = true
+  for (let i = 0; i < text.length; i++) {
+    const raw = text[i]
+    if (raw === '-' || raw === '\u00ad' || raw === '\u2011') {
+      // Hyphenation join: drop the hyphen and any whitespace right after it.
+      let j = i + 1
+      while (j < text.length && /\s/.test(text[j])) j++
+      if (j > i + 1) i = j - 1
+      continue
+    }
+    let ch = raw.toLowerCase()
+    if (/\s/.test(ch)) {
+      if (lastWasSpace) continue
+      ch = ' '
+      lastWasSpace = true
+    } else {
+      lastWasSpace = false
+    }
+    norm += ch
+    map.push(i)
+  }
+  return { norm, map }
+}
+
+/** Normalized, geometry-tagged text of one page, used to place highlights. */
+interface PageText {
+  page: number
+  vp: PageViewport // scale-1 viewport: converts PDF-space to page fractions
+  norm: string
+  map: number[]
+  rawLen: number
+  items: Array<{ x: number; y: number; w: number; h: number }>
+  spans: Array<{ start: number; end: number }>
+}
+
+/** Extracts and normalizes a page's text with per-item geometry. */
+async function extractPageText(pdfPage: PDFPageProxy, page: number): Promise<PageText> {
+  const content = await pdfPage.getTextContent()
+  const vp = pdfPage.getViewport({ scale: 1 })
+  const items: Array<{ x: number; y: number; w: number; h: number }> = []
+  const spans: Array<{ start: number; end: number }> = []
+  let raw = ''
+  for (const item of content.items) {
+    if (!('str' in item)) continue
+    spans.push({ start: raw.length, end: raw.length + item.str.length })
+    raw += item.str
+    items.push({
+      x: item.transform[4],
+      y: item.transform[5],
+      w: item.width,
+      h: item.height
+    })
+  }
+  const { norm, map } = normalizeForSearch(raw)
+  return { page, vp, norm, map, rawLen: raw.length, items, spans }
+}
+
+/** Highlight bands (page %) covering a raw-character range of a page. */
+function findRects(text: PageText, rawStart: number, rawEnd: number): SearchRect[] {
+  const rects: SearchRect[] = []
+  for (let i = 0; i < text.items.length; i++) {
+    const span = text.spans[i]
+    if (span.end <= rawStart || span.start >= rawEnd) continue
+    const it = text.items[i]
+    // Char extents within the item are approximated proportionally.
+    const len = Math.max(span.end - span.start, 1)
+    const c0 = Math.max(0, rawStart - span.start)
+    const c1 = Math.min(span.end, rawEnd) - span.start
+    const x0 = it.x + (c0 / len) * it.w
+    const x1 = it.x + (c1 / len) * it.w
+    const [vx0, vy0] = text.vp.convertToViewportPoint(x0, it.y)
+    const [vx1, vy1] = text.vp.convertToViewportPoint(x1, it.y + it.h)
+    const width = (Math.abs(vx1 - vx0) / text.vp.width) * 100
+    const height = (Math.abs(vy1 - vy0) / text.vp.height) * 100
+    if (width <= 0 || height <= 0) continue
+    rects.push({
+      left: (Math.min(vx0, vx1) / text.vp.width) * 100,
+      top: (Math.min(vy0, vy1) / text.vp.height) * 100,
+      width,
+      height
+    })
+  }
+  return rects
+}
+
+// English word list (word-list package, ~275k entries) used by the copy
+// handler to decide whether a line-end hyphen is a soft word split or the
+// hyphen of a genuine compound ("ro-bustly" merges, "well-known" doesn't).
+let wordSet: Set<string> | null = null
+
+/** Loads the word list once, lazily. A failed load resolves to an empty set,
+    degrading the copy handler to plain lowercase heuristics. */
+async function ensureWordSet(): Promise<void> {
+  if (wordSet) return
+  try {
+    const res = await fetch(wordsUrl)
+    const text = await res.text()
+    wordSet = new Set(
+      text
+        .split('\n')
+        .map((word) => word.trim())
+        .filter(Boolean)
+    )
+  } catch {
+    wordSet = new Set()
+  }
+}
+
+/** True when the word is in the loaded English word list. */
+function isWord(word: string): boolean {
+  return wordSet !== null && wordSet.has(word.toLowerCase())
+}
+
+/** Common derivational/inflectional suffixes: when the merged form is a real
+    word and the tail starts with one of these, the line-end hyphen was a soft
+    break inside a single word ("remark-able" → "remarkable"). */
+const WORD_SUFFIXES = [
+  'able',
+  'ible',
+  'ment',
+  'ness',
+  'tion',
+  'sion',
+  'ing',
+  'ed',
+  'er',
+  'est',
+  'ly',
+  'ful',
+  'less',
+  'ize',
+  'ise',
+  'ity',
+  'ous',
+  'ive',
+  'ify',
+  'ish',
+  'al',
+  'en'
+]
+
+/** One visual line of selected text, rebuilt from pdf.js spans. */
+interface CopyLine {
+  pageBreakBefore: boolean
+  hasBreakBefore: boolean
+  spans: HTMLSpanElement[]
+  top: number
+  bottom: number
+  text: string
+}
+
+/**
+ * Rebuilds flowing text from the spans covered by the selection. The browser's
+ * default copy emits one line per absolutely-positioned span; instead, spans
+ * are regrouped into visual lines (kept in content order, so two-column
+ * layouts stay in reading order), lines inside a paragraph join with a space,
+ * paragraph breaks (the injected <br>s) and page breaks become newlines, and
+ * hyphenated line ends ("ro-" / "bustly") re-join into whole words. Returns
+ * null when the selection does not cover any PDF text layer.
+ */
+function buildSelectionText(sel: Selection, scroller: HTMLDivElement): string | null {
+  const lines: CopyLine[] = []
+  let pageBreakNext = false
+  for (const layer of scroller.querySelectorAll<HTMLElement>('.textLayer')) {
+    let current: CopyLine | null = null
+    let added = false
+    for (const node of layer.querySelectorAll('span')) {
+      if (!(node instanceof HTMLSpanElement) || !sel.containsNode(node, true)) continue
+      const top = node.offsetTop
+      const bottom = top + node.offsetHeight
+      const sameLine =
+        current !== null &&
+        Math.min(bottom, current.bottom) - Math.max(top, current.top) >=
+          0.5 * Math.min(node.offsetHeight, current.bottom - current.top)
+      if (sameLine && current) {
+        current.spans.push(node)
+        current.top = Math.min(current.top, top)
+        current.bottom = Math.max(current.bottom, bottom)
+      } else {
+        current = {
+          pageBreakBefore: pageBreakNext,
+          // Only the layer's own paragraph markers count — pdf.js appends an
+          // untagged <br> at every end-of-line, which must NOT force a copy
+          // newline (wrapped lines stay in one flowing paragraph).
+          hasBreakBefore:
+            node.previousElementSibling instanceof HTMLBRElement &&
+            (node.previousElementSibling as HTMLElement).dataset.paraBreak === '1',
+          spans: [node],
+          top,
+          bottom,
+          text: ''
+        }
+        lines.push(current)
+        pageBreakNext = false
+        added = true
+      }
+    }
+    if (added) pageBreakNext = true
+  }
+  if (lines.length === 0) return null
+
+  // Assemble each line's text: spans in x order. A space goes between spans
+  // when either run carries whitespace at the seam, or when the visual gap
+  // (getBoundingClientRect — includes pdf.js's scale-x fitting) exceeds a
+  // quarter of the average glyph width. Mid-word kerning splits join directly.
+  for (const line of lines) {
+    line.spans.sort((a, b) => a.offsetLeft - b.offsetLeft)
+    let text = ''
+    let prev: HTMLSpanElement | null = null
+    let prevRight = 0
+    for (const span of line.spans) {
+      const raw = span.textContent ?? ''
+      if (!raw) continue
+      const rect = span.getBoundingClientRect()
+      if (text === '') {
+        text = raw.replace(/^\s+/, '')
+        prev = span
+        prevRight = rect.right
+        continue
+      }
+      if (!raw.trim()) {
+        text = text.replace(/\s+$/, '') + ' '
+        prev = span
+        prevRight = rect.right
+        continue
+      }
+      const right = text.replace(/\s+$/, '')
+      const left = raw.replace(/^\s+/, '')
+      const endsSpace = /\s$/.test(text)
+      const rawStartsSpace = /^\s/.test(raw)
+      const attach =
+        /^[,.;:!?)\]}\u2019\u201d\x27\x22]/.test(left) ||
+        /\([\u2018\u201c\x27\x22]$/.test(right) ||
+        /[-\u2010]$/.test(right) ||
+        (prev !== null && rect.left - prevRight <= (rect.width / Math.max(raw.length, 1)) * 0.25)
+      text = right + (endsSpace || rawStartsSpace || !attach ? ' ' : '') + left
+      prev = span
+      prevRight = rect.right
+    }
+    line.text = text.replace(/ {2,}/g, ' ').trim()
+  }
+
+  // Join lines: paragraph breaks and page breaks become newlines; a hyphen at
+  // a line end merges with a lowercase continuation into one word.
+  let out = ''
+  let prevText = ''
+  let prevBreak = true
+  for (const line of lines) {
+    if (!line.text) continue
+    if (out === '') {
+      out = line.text
+    } else if (/[-\u2010]$/.test(prevText) && !prevBreak && /^[a-zà-öø-ÿ]/.test(line.text)) {
+      // Candidate soft hyphenation: the hyphen-removed form decides. If the
+      // merged form is a real word ("ro-bustly" → "robustly",
+      // "remark-able" → "remarkable"), the hyphen was a soft line break —
+      // drop it. If not ("SoccerNet-calibration"), the hyphen belongs to the
+      // word — keep it. One refinement: a compound whose halves are themselves
+      // words ("well-known", "e-mail") keeps its hyphen even when a merged
+      // spelling exists, unless the tail merely adds a suffix.
+      const leftFrag = prevText
+        .slice(prevText.lastIndexOf(' ') + 1)
+        .replace(/[-\u2010]$/, '')
+        .toLowerCase()
+      const rightFrag = (line.text.match(/^[a-z\u00e0-\u00f6\u00f8-\u00ff]+/) ?? [
+        ''
+      ])[0].toLowerCase()
+      const joined = leftFrag + rightFrag
+      const compound = isWord(leftFrag) && isWord(rightFrag)
+      const keepHyphen =
+        !isWord(joined) || (compound && !WORD_SUFFIXES.some((s) => rightFrag.startsWith(s)))
+      if (keepHyphen) out += line.text
+      else out = out.replace(/[-\u2010]$/, '') + line.text
+    } else {
+      out += (line.hasBreakBefore || line.pageBreakBefore ? '\n' : ' ') + line.text
+    }
+    prevText = line.text
+    prevBreak = line.hasBreakBefore || line.pageBreakBefore
+  }
+  return out.trim() || null
+}
+
 interface LinkInfo {
   url?: string
   dest?: unknown
@@ -83,6 +395,14 @@ function PdfBody({ vaultId, relPath }: { vaultId: string; relPath: string }): Re
   const zoomRef = useRef(zoom) // latest zoom, read by the deferred bitmap renderer
   const pagesRenderRef = useRef<(() => void) | null>(null)
   const linkAnnotationsRef = useRef(new Map<number, LinkInfo[]>())
+  const [searchOpen, setSearchOpen] = useState(false)
+  const [searchQuery, setSearchQuery] = useState('')
+  const [matchInfo, setMatchInfo] = useState({ total: 0, current: 0 })
+  const searchOpenRef = useRef(false) // mirror for the global key handler
+  const searchInputRef = useRef<HTMLInputElement>(null)
+  const searchTokenRef = useRef(0) // cancels stale search scans
+  const matchesRef = useRef<SearchMatch[]>([])
+  const activeMatchRef = useRef(-1)
 
   const getLinkAnnotations = async (
     pdfPage: PDFPageProxy
@@ -163,6 +483,7 @@ function PdfBody({ vaultId, relPath }: { vaultId: string; relPath: string }): Re
         setDoc(loaded)
         setNumPages(loaded.numPages)
         setPage(1)
+        void ensureWordSet() // prefetch the hyphenation dictionary
       } catch (err) {
         if (!cancelled) setError(err instanceof Error ? err.message : 'Failed to load PDF')
       }
@@ -263,7 +584,11 @@ function PdfBody({ vaultId, relPath }: { vaultId: string; relPath: string }): Re
           if (!expectLineStart) continue
           expectLineStart = false
           if (prevLineTop !== null && Math.abs(node.offsetTop - prevLineTop) > boundaryGap) {
-            node.parentNode?.insertBefore(document.createElement('br'), node)
+            // Mark it: pdf.js itself appends <br>s at every end-of-line, and
+            // the copy handler must only honor these paragraph markers.
+            const br = document.createElement('br')
+            br.dataset.paraBreak = '1'
+            node.parentNode?.insertBefore(br, node)
           }
           prevLineTop = node.offsetTop
         }
@@ -429,11 +754,41 @@ function PdfBody({ vaultId, relPath }: { vaultId: string; relPath: string }): Re
     }
   }, [page])
 
-  // Zoom shortcuts: ⌘/Ctrl +, −, 0 (the app menu has no zoom accelerators, so
-  // these reach the renderer and stay scoped to the open PDF).
+  const clearSearchHighlights = useCallback((): void => {
+    matchesRef.current = []
+    activeMatchRef.current = -1
+    setMatchInfo({ total: 0, current: 0 })
+    scrollerRef.current
+      ?.querySelectorAll<HTMLDivElement>('.searchLayer')
+      .forEach((layer) => layer.replaceChildren())
+  }, [])
+
+  // Close (Esc / ×): hides the bar and clears all highlights.
+  const closeSearch = useCallback((): void => {
+    searchOpenRef.current = false
+    clearSearchHighlights()
+    setSearchOpen(false)
+  }, [clearSearchHighlights])
+
+  // Zoom + search shortcuts: ⌘/Ctrl +/−/0/F and Escape (the app menu has no
+  // matching accelerators, so these reach the renderer and stay scoped to the
+  // open PDF).
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
+      if (e.key === 'Escape' && searchOpenRef.current) {
+        e.preventDefault()
+        closeSearch()
+        return
+      }
       if (!(e.metaKey || e.ctrlKey)) return
+      if (e.key === 'f') {
+        e.preventDefault()
+        searchOpenRef.current = true
+        setSearchOpen(true)
+        searchInputRef.current?.focus()
+        searchInputRef.current?.select()
+        return
+      }
       const target = e.target as HTMLElement | null
       if (
         target &&
@@ -454,7 +809,7 @@ function PdfBody({ vaultId, relPath }: { vaultId: string; relPath: string }): Re
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [])
+  }, [closeSearch])
 
   // Ctrl/⌘ + mouse wheel (and trackpad pinch) zooms the document.
   useEffect(() => {
@@ -491,6 +846,157 @@ function PdfBody({ vaultId, relPath }: { vaultId: string; relPath: string }): Re
     const timer = setTimeout(() => pagesRenderRef.current?.(), 140)
     return () => clearTimeout(timer)
   }, [zoom, doc])
+
+  // Mirror search-open state for the key handler; focus the input on open.
+  useEffect(() => {
+    searchOpenRef.current = searchOpen
+    if (searchOpen) {
+      searchInputRef.current?.focus()
+      searchInputRef.current?.select()
+    }
+  }, [searchOpen])
+
+  const renderSearchHighlights = useCallback((): void => {
+    const scroller = scrollerRef.current
+    if (!scroller) return
+    scroller
+      .querySelectorAll<HTMLDivElement>('.searchLayer')
+      .forEach((layer) => layer.replaceChildren())
+    matchesRef.current.forEach((match, idx) => {
+      for (const part of match.parts) {
+        const layer = scroller.querySelector<HTMLDivElement>(
+          `[data-page-wrapper="${part.page}"] > .searchLayer`
+        )
+        if (!layer) continue
+        for (const rect of part.rects) {
+          const div = document.createElement('div')
+          div.className = `search-highlight${idx === activeMatchRef.current ? ' active' : ''}`
+          div.dataset.idx = String(idx)
+          div.style.left = `${rect.left}%`
+          div.style.top = `${rect.top}%`
+          div.style.width = `${rect.width}%`
+          div.style.height = `${rect.height}%`
+          layer.append(div)
+        }
+      }
+    })
+  }, [])
+
+  // Scrolls to a match and marks it active. Index wraps in both directions.
+  const goToMatch = useCallback((idx: number): void => {
+    const total = matchesRef.current.length
+    if (!total) return
+    const next = ((idx % total) + total) % total
+    activeMatchRef.current = next
+    setMatchInfo({ total, current: next + 1 })
+    const match = matchesRef.current[next]
+    const scroller = scrollerRef.current
+    const wrapper = scroller?.querySelector<HTMLDivElement>(
+      `[data-page-wrapper="${match.parts[0].page}"]`
+    )
+    if (!scroller || !wrapper) return
+    scroller.querySelectorAll<HTMLElement>('.search-highlight').forEach((el) => {
+      el.classList.toggle('active', el.dataset.idx === String(next))
+    })
+    const top =
+      wrapper.getBoundingClientRect().top -
+      scroller.getBoundingClientRect().top +
+      scroller.scrollTop +
+      (match.parts[0].rects[0].top / 100) * wrapper.offsetHeight -
+      scroller.clientHeight / 3
+    scroller.scrollTop = Math.max(0, top)
+  }, [])
+
+  // Scans every page's text for the query (including hyphen-split words that
+  // straddle a page boundary) and stores highlight rects in page percentages.
+  // Token-checked so stale scans abort mid-flight.
+  const runSearch = useCallback(
+    async (rawQuery: string): Promise<void> => {
+      const token = ++searchTokenRef.current
+      matchesRef.current = []
+      activeMatchRef.current = -1
+      const needle = normalizeForSearch(rawQuery).norm
+      if (!doc || !needle) {
+        renderSearchHighlights()
+        setMatchInfo({ total: 0, current: 0 })
+        return
+      }
+      const results: SearchMatch[] = []
+      let prev: PageText | null = null
+      for (let p = 1; p <= doc.numPages; p++) {
+        if (token !== searchTokenRef.current) return
+        let text: PageText
+        try {
+          const pdfPage = await doc.getPage(p)
+          if (token !== searchTokenRef.current) return
+          text = await extractPageText(pdfPage, p)
+          if (token !== searchTokenRef.current) return
+        } catch {
+          prev = null // page unreadable — skip it (and any boundary chain)
+          continue
+        }
+        // Matches fully inside this page.
+        let from = 0
+        for (;;) {
+          const at = text.norm.indexOf(needle, from)
+          if (at === -1) break
+          from = at + 1
+          const rects = findRects(text, text.map[at], text.map[at + needle.length - 1] + 1)
+          if (rects.length) results.push({ parts: [{ page: p, rects }] })
+        }
+        // Hyphen-split word crossing the previous page boundary: the needle's
+        // head ends the previous page, its tail starts this one.
+        if (prev) {
+          for (let s = 1; s < needle.length; s++) {
+            if (!prev.norm.endsWith(needle.slice(0, s))) continue
+            if (!text.norm.startsWith(needle.slice(s))) continue
+            const headRects = findRects(prev, prev.map[prev.norm.length - s], prev.rawLen)
+            const tailRects = findRects(text, text.map[0], text.map[needle.length - s - 1] + 1)
+            if (headRects.length && tailRects.length) {
+              results.push({
+                parts: [
+                  { page: prev.page, rects: headRects },
+                  { page: p, rects: tailRects }
+                ]
+              })
+              break // at most one cross-page match per boundary
+            }
+          }
+        }
+        prev = text
+      }
+      if (token !== searchTokenRef.current) return
+      matchesRef.current = results
+      renderSearchHighlights()
+      if (results.length) goToMatch(0)
+      else setMatchInfo({ total: 0, current: 0 })
+    },
+    [doc, goToMatch, renderSearchHighlights]
+  )
+
+  // Live search: re-run (debounced) as the query changes.
+  useEffect(() => {
+    if (!searchOpen) return
+    const timer = setTimeout(() => void runSearch(searchQuery), 250)
+    return () => clearTimeout(timer)
+  }, [searchQuery, searchOpen, runSearch])
+
+  // Paragraph-aware copy: rebuild flowing text from the selected text-layer
+  // spans (the browser default emits one line per span). Selections outside
+  // the PDF text layers fall through to the default copy behavior.
+  useEffect(() => {
+    const onCopy = (e: ClipboardEvent): void => {
+      const scroller = scrollerRef.current
+      const sel = document.getSelection()
+      if (!scroller || !sel || sel.isCollapsed || sel.rangeCount === 0) return
+      const text = buildSelectionText(sel, scroller)
+      if (text === null) return
+      e.preventDefault()
+      e.clipboardData?.setData('text/plain', text)
+    }
+    document.addEventListener('copy', onCopy)
+    return () => document.removeEventListener('copy', onCopy)
+  }, [])
 
   const jumpToPage = (n: number): void => {
     const scroller = scrollerRef.current
@@ -546,7 +1052,71 @@ function PdfBody({ vaultId, relPath }: { vaultId: string; relPath: string }): Re
             <PlusIcon className="h-4 w-4" />
           </button>
         </div>
+        <button
+          type="button"
+          className={`${btnIcon} absolute right-2`}
+          title="Search in PDF (⌘F)"
+          onClick={() => {
+            searchOpenRef.current = true
+            setSearchOpen(true)
+          }}
+        >
+          <SearchIcon className="h-4 w-4" />
+        </button>
       </div>
+      {searchOpen && (
+        <div className="absolute right-3 top-12 z-20 flex items-center gap-1 rounded-lg border border-line bg-surface px-2 py-1.5 shadow-lg">
+          <input
+            ref={searchInputRef}
+            type="text"
+            value={searchQuery}
+            placeholder="Search in PDF"
+            spellCheck={false}
+            className="w-44 bg-transparent text-sm text-ink outline-none placeholder:text-ink-soft"
+            onChange={(event) => setSearchQuery(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') {
+                event.preventDefault()
+                goToMatch(activeMatchRef.current + (event.shiftKey ? -1 : 1))
+              } else if (event.key === 'Escape') {
+                event.preventDefault()
+                closeSearch()
+              }
+            }}
+          />
+          <span className="min-w-16 whitespace-nowrap text-center text-xs tabular-nums text-ink-soft">
+            {searchQuery
+              ? matchInfo.total > 0
+                ? `${matchInfo.current}/${matchInfo.total}`
+                : 'No matches'
+              : ''}
+          </span>
+          <button
+            type="button"
+            className={btnIcon}
+            title="Previous match (Shift+Enter)"
+            onClick={() => goToMatch(activeMatchRef.current - 1)}
+          >
+            <ChevronUpIcon className="h-4 w-4" />
+          </button>
+          <button
+            type="button"
+            className={btnIcon}
+            title="Next match (Enter)"
+            onClick={() => goToMatch(activeMatchRef.current + 1)}
+          >
+            <ChevronDownIcon className="h-4 w-4" />
+          </button>
+          <button
+            type="button"
+            className={btnIcon}
+            title="Close search (Esc)"
+            onClick={closeSearch}
+          >
+            <XIcon className="h-4 w-4" />
+          </button>
+        </div>
+      )}
       <div ref={scrollerRef} className="min-h-0 flex-1 overflow-auto">
         {error ? (
           <div className="flex h-full items-center justify-center px-8 text-sm text-ink-soft">
@@ -563,6 +1133,7 @@ function PdfBody({ vaultId, relPath }: { vaultId: string; relPath: string }): Re
                 <canvas data-page={i + 1} className="block w-full" />
                 <div className="annotationLayer" />
                 <div data-text-layer={i + 1} className="textLayer" />
+                <div className="searchLayer" />
               </div>
             ))}
           </div>
