@@ -214,34 +214,6 @@ function isWord(word: string): boolean {
   return wordSet !== null && wordSet.has(word.toLowerCase())
 }
 
-/** Common derivational/inflectional suffixes: when the merged form is a real
-    word and the tail starts with one of these, the line-end hyphen was a soft
-    break inside a single word ("remark-able" → "remarkable"). */
-const WORD_SUFFIXES = [
-  'able',
-  'ible',
-  'ment',
-  'ness',
-  'tion',
-  'sion',
-  'ing',
-  'ed',
-  'er',
-  'est',
-  'ly',
-  'ful',
-  'less',
-  'ize',
-  'ise',
-  'ity',
-  'ous',
-  'ive',
-  'ify',
-  'ish',
-  'al',
-  'en'
-]
-
 /** One visual line of selected text, rebuilt from pdf.js spans. */
 interface CopyLine {
   pageBreakBefore: boolean
@@ -371,12 +343,13 @@ function buildSelectionText(sel: Selection, scroller: HTMLDivElement): string | 
       out = line.text
     } else if (/[-\u2010]$/.test(prevText) && !prevBreak && /^[a-zà-öø-ÿ]/.test(line.text)) {
       // Candidate soft hyphenation: the hyphen-removed form decides. If the
-      // merged form is a real word ("ro-bustly" → "robustly",
-      // "remark-able" → "remarkable"), the hyphen was a soft line break —
-      // drop it. If not ("SoccerNet-calibration"), the hyphen belongs to the
-      // word — keep it. One refinement: a compound whose halves are themselves
-      // words ("well-known", "e-mail") keeps its hyphen even when a merged
-      // spelling exists, unless the tail merely adds a suffix.
+      // merged form is a dictionary word ("ro-bustly" → "robustly",
+      // "ob-tain" → "obtain", "broad-cast" → "broadcast"), the hyphen was
+      // a soft line break — drop it. Otherwise the hyphen belongs to the word:
+      // keep it when the continuation itself is a word ("well-known",
+      // "SoccerNet-calibration", "e-mail" — the list lacks technical terms
+      // like "homography", so an unknown merged form with an unknown tail is
+      // still treated as a soft split of one).
       const leftFrag = prevText
         .slice(prevText.lastIndexOf(' ') + 1)
         .replace(/[-\u2010]$/, '')
@@ -384,10 +357,7 @@ function buildSelectionText(sel: Selection, scroller: HTMLDivElement): string | 
       const rightFrag = (line.text.match(/^[a-z\u00e0-\u00f6\u00f8-\u00ff]+/) ?? [
         ''
       ])[0].toLowerCase()
-      const joined = leftFrag + rightFrag
-      const compound = isWord(leftFrag) && isWord(rightFrag)
-      const keepHyphen =
-        !isWord(joined) || (compound && !WORD_SUFFIXES.some((s) => rightFrag.startsWith(s)))
+      const keepHyphen = !isWord(leftFrag + rightFrag) && isWord(rightFrag)
       if (keepHyphen) out += line.text
       else out = out.replace(/[-\u2010]$/, '') + line.text
     } else {
