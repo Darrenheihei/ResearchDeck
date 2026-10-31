@@ -163,6 +163,29 @@ function findRects(text: PageText, rawStart: number, rawEnd: number): SearchRect
   return rects
 }
 
+/** Locates a selection boundary inside a text-layer span, as a character
+    offset within the span's text; null when the boundary is not inside a
+    span (nothing to clip). */
+function boundaryInSpan(
+  container: Node | null,
+  offset: number
+): { span: HTMLSpanElement; at: number } | null {
+  let span: HTMLSpanElement | null = null
+  let at = offset
+  if (container instanceof Text) {
+    const parent = container.parentElement
+    if (parent instanceof HTMLSpanElement) span = parent
+  } else if (container instanceof HTMLSpanElement) {
+    // Element boundary: offset counts child nodes before it — before the
+    // first child is the span start, after it is the span end.
+    span = container
+    at = offset === 0 ? 0 : (container.textContent?.length ?? 0)
+  }
+  if (!span) return null
+  const len = span.textContent?.length ?? 0
+  return { span, at: Math.max(0, Math.min(at, len)) }
+}
+
 // English word list (word-list package, ~275k entries) used by the copy
 // handler to decide whether a line-end hyphen is a soft word split or the
 // hyphen of a genuine compound ("ro-bustly" merges, "well-known" doesn't).
@@ -279,6 +302,21 @@ function buildSelectionText(sel: Selection, scroller: HTMLDivElement): string | 
   }
   if (lines.length === 0) return null
 
+  // Clip spans that the selection only partially covers: the browser default
+  // copies sub-span text, so must we — otherwise a few words beyond the
+  // highlight leak into the clipboard.
+  const clips = new Map<HTMLSpanElement, { start?: number; end?: number }>()
+  const range = sel.rangeCount > 0 ? sel.getRangeAt(0) : null
+  if (range) {
+    const startAt = boundaryInSpan(range.startContainer, range.startOffset)
+    if (startAt) clips.set(startAt.span, { start: startAt.at })
+    const endAt = boundaryInSpan(range.endContainer, range.endOffset)
+    if (endAt) {
+      const existing = clips.get(endAt.span)
+      clips.set(endAt.span, { start: existing?.start, end: endAt.at })
+    }
+  }
+
   // Assemble each line's text: spans in x order. A space goes between spans
   // when either run carries whitespace at the seam, or when the visual gap
   // (getBoundingClientRect — includes pdf.js's scale-x fitting) exceeds a
@@ -289,7 +327,9 @@ function buildSelectionText(sel: Selection, scroller: HTMLDivElement): string | 
     let prev: HTMLSpanElement | null = null
     let prevRight = 0
     for (const span of line.spans) {
-      const raw = span.textContent ?? ''
+      let raw = span.textContent ?? ''
+      const clip = clips.get(span)
+      if (clip) raw = raw.slice(clip.start ?? 0, clip.end ?? raw.length)
       if (!raw) continue
       const rect = span.getBoundingClientRect()
       if (text === '') {
