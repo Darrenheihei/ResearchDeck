@@ -413,6 +413,11 @@ function PdfBody({ vaultId, relPath }: { vaultId: string; relPath: string }): Re
   const searchTokenRef = useRef(0) // cancels stale search scans
   const matchesRef = useRef<SearchMatch[]>([])
   const activeMatchRef = useRef(-1)
+  const [backTarget, setBackTarget] = useState<{ page: number; forward: boolean } | null>(null)
+  const [backShown, setBackShown] = useState(false) // inside the 3s window
+  const [backHovered, setBackHovered] = useState(false)
+  const backTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const pageRef = useRef(page) // latest tracked page, read at jump time
 
   const getLinkAnnotations = async (
     pdfPage: PDFPageProxy
@@ -431,11 +436,11 @@ function PdfBody({ vaultId, relPath }: { vaultId: string; relPath: string }): Re
     return links
   }
 
-  const jumpToDest = async (dest: unknown): Promise<void> => {
-    if (!doc) return
+  const jumpToDest = async (dest: unknown): Promise<number | null> => {
+    if (!doc) return null
     try {
       const explicit = typeof dest === 'string' ? await doc.getDestination(dest) : dest
-      if (!Array.isArray(explicit) || explicit.length === 0) return
+      if (!Array.isArray(explicit) || explicit.length === 0) return null
       const pageIndex = (await doc.getPageIndex(explicit[0])) + 1
       const destPage = await doc.getPage(pageIndex)
       const vp = destPage.getViewport({ scale: 1 })
@@ -458,7 +463,7 @@ function PdfBody({ vaultId, relPath }: { vaultId: string; relPath: string }): Re
       }
       const scroller = scrollerRef.current
       const wrapper = scroller?.querySelector<HTMLDivElement>(`[data-page-wrapper="${pageIndex}"]`)
-      if (!scroller || !wrapper) return
+      if (!scroller || !wrapper) return null
       const yCss = (yTopDown / vp.height) * wrapper.offsetHeight
       const top =
         wrapper.getBoundingClientRect().top -
@@ -467,8 +472,9 @@ function PdfBody({ vaultId, relPath }: { vaultId: string; relPath: string }): Re
         yCss -
         12
       scroller.scrollTop = Math.max(0, top)
+      return pageIndex
     } catch {
-      // Unresolvable destination — ignore.
+      return null
     }
   }
 
@@ -675,7 +681,9 @@ function PdfBody({ vaultId, relPath }: { vaultId: string; relPath: string }): Re
                       window.open(link.url, '_blank')
                       return
                     }
-                    void jumpToDest(link.dest)
+                    void jumpToDest(link.dest).then((target) => {
+                      if (target !== null) recordJump(target)
+                    })
                   })
                   annotationDiv.append(div)
                 }
@@ -866,6 +874,43 @@ function PdfBody({ vaultId, relPath }: { vaultId: string; relPath: string }): Re
     }
   }, [searchOpen])
 
+  useEffect(() => {
+    pageRef.current = page
+  }, [page])
+
+  // Restart the 3-second visibility window of the back button.
+  const showBackWindow = useCallback((): void => {
+    setBackShown(true)
+    if (backTimerRef.current) clearTimeout(backTimerRef.current)
+    backTimerRef.current = setTimeout(() => setBackShown(false), 3000)
+  }, [])
+
+  // Flash the back button for 3 seconds after a page jump; hovering its
+  // region keeps it visible afterwards (it re-appears on hover).
+  const showBackButton = useCallback(
+    (fromPage: number): void => {
+      setBackTarget({ page: fromPage, forward: false })
+      showBackWindow()
+    },
+    [showBackWindow]
+  )
+
+  // Record a jump: offer a way back to the pre-jump page, but only when the
+  // jump actually changes pages.
+  const recordJump = useCallback(
+    (targetPage: number): void => {
+      if (targetPage !== pageRef.current) showBackButton(pageRef.current)
+    },
+    [showBackButton]
+  )
+
+  useEffect(
+    () => () => {
+      if (backTimerRef.current) clearTimeout(backTimerRef.current)
+    },
+    []
+  )
+
   const renderSearchHighlights = useCallback((): void => {
     const scroller = scrollerRef.current
     if (!scroller) return
@@ -1025,7 +1070,11 @@ function PdfBody({ vaultId, relPath }: { vaultId: string; relPath: string }): Re
       pageCancelRef.current = false
     } else {
       const parsed = parseInt(pageDraft ?? '', 10)
-      if (!Number.isNaN(parsed)) jumpToPage(Math.min(numPages, Math.max(1, parsed)))
+      if (!Number.isNaN(parsed)) {
+        const target = Math.min(numPages, Math.max(1, parsed))
+        recordJump(target)
+        jumpToPage(target)
+      }
     }
     setEditingPage(false)
     setPageDraft(null)
@@ -1197,6 +1246,26 @@ function PdfBody({ vaultId, relPath }: { vaultId: string; relPath: string }): Re
           </>
         )}
       </div>
+      {backTarget !== null && (
+        <button
+          type="button"
+          className={`absolute bottom-4 left-4 z-10 rounded-md bg-neutral-800/85 px-3.5 py-1.5 text-xs font-medium tabular-nums text-white shadow-lg transition-opacity duration-300 ${
+            backShown || backHovered ? 'opacity-100' : 'opacity-0'
+          }`}
+          onMouseEnter={() => setBackHovered(true)}
+          onMouseLeave={() => setBackHovered(false)}
+          onClick={() => {
+            const from = pageRef.current
+            jumpToPage(backTarget.page)
+            // Flip the pair: the page being left becomes the next target,
+            // so the button keeps toggling between origin and destination.
+            setBackTarget({ page: from, forward: !backTarget.forward })
+            showBackWindow()
+          }}
+        >
+          {backTarget.forward ? `Back to p.${backTarget.page} >` : `< Back to p.${backTarget.page}`}
+        </button>
+      )}
     </div>
   )
 }
