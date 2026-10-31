@@ -2,13 +2,14 @@ import { app, shell } from 'electron'
 import { basename, join, normalize, sep } from 'path'
 import { promises as fsp, constants as fsConstants } from 'fs'
 import { randomUUID } from 'crypto'
-import type {
-  VaultErrorCode,
-  VaultListResult,
-  VaultSession,
-  VaultStatus,
-  VaultSummary,
-  VaultTree
+import {
+  RESEARCH_PAPERS_DIR,
+  type VaultErrorCode,
+  type VaultListResult,
+  type VaultSession,
+  type VaultStatus,
+  type VaultSummary,
+  type VaultTree
 } from '@shared/types'
 import { readRegistry, writeRegistry, type RegistryVault } from './vaultRegistry'
 import { loadSession, sanitizeSession, saveSession } from './sessionStore'
@@ -16,6 +17,20 @@ import { scanVaultTree } from '../fs/treeScanner'
 
 const MARKER_DIR = '.researchdeck'
 const MARKER_CONFIG = 'config.json'
+
+/**
+ * Research papers live in this dedicated folder inside every vault. It is
+ * created with the vault and self-healed on open when missing.
+ */
+async function ensureResearchPapersDir(vaultPath: string): Promise<void> {
+  try {
+    await fsp.mkdir(join(vaultPath, RESEARCH_PAPERS_DIR), { recursive: true })
+  } catch (err) {
+    // Non-fatal: e.g. a FILE named "Research Papers" blocks the folder. The
+    // vault still works; the tree just won't group papers under it.
+    console.warn('[vault-manager] Could not create the Research Papers folder:', err)
+  }
+}
 
 /** Case-insensitive path comparison everywhere except case-sensitive Linux. */
 const CASE_INSENSITIVE = process.platform !== 'linux'
@@ -166,6 +181,7 @@ export async function createVaultFromExisting(inputPath: string): Promise<VaultS
   checkNoOverlap(rp, registry.vaults)
   const id = randomUUID()
   await ensureMarker(rp, id)
+  await ensureResearchPapersDir(rp)
   const now = new Date().toISOString()
   const vault: RegistryVault = {
     id,
@@ -202,6 +218,7 @@ export async function createNewVault(name: string, parentPath: string): Promise<
   if (!rp) throw new VaultOpError('UNKNOWN', 'The created folder could not be resolved.')
   const id = randomUUID()
   await ensureMarker(rp, id)
+  await ensureResearchPapersDir(rp)
   const now = new Date().toISOString()
   const vault: RegistryVault = { id, name: clean, path: rp, createdAt: now, lastOpenedAt: now }
   registry.vaults.push(vault)
@@ -225,6 +242,9 @@ export async function openVault(id: string): Promise<{
   if (rp !== vault.path) vault.path = rp // Normalize symlinks.
   // Self-heal: restore the .researchdeck marker if the user deleted it.
   await ensureMarker(rp, vault.id)
+  // Self-heal: recreate the Research Papers folder if the user deleted it.
+  // Runs before the tree scan so the folder shows up immediately.
+  await ensureResearchPapersDir(rp)
   vault.lastOpenedAt = new Date().toISOString()
   registry.lastVaultId = vault.id
   await writeRegistry(registry)

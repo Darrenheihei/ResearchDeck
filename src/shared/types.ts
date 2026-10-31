@@ -44,6 +44,9 @@ export interface VaultTree {
   truncated: boolean
 }
 
+/** Dedicated per-vault folder where research paper PDFs live. */
+export const RESEARCH_PAPERS_DIR = 'Research Papers'
+
 export type VaultErrorCode =
   | 'NOT_FOUND'
   | 'NOT_A_DIRECTORY'
